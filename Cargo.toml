@@ -1,0 +1,13 @@
+[package]
+name = "svg-scale"
+version = "0.1.0"
+edition = "2021"
+description = "Geometry-true SVG scaler with VSCode icon pipeline"
+license = "MIT"
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+anyhow = "1"
+roxmltree = "0.19"
+xmlwriter = "0.1"
+regex = "1"
