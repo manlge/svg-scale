@@ -6,8 +6,9 @@ A geometry-true SVG scaling tool with a built-in **VSCode Extension icon pipelin
 
 - No Inkscape
 - No viewBox fake scaling
-- Real geometry scaling (path / stroke / shapes)
+- Real geometry scaling (path / stroke / shapes / transforms)
 - CI friendly
+- Handles complex SVG transforms correctly
 
 ## Install
 
@@ -22,7 +23,13 @@ cargo install --path .
 Source of truth: **512x512 SVG**
 
 ```bash
-svg-scale icon-512.svg --vscode
+svg-scale -i icon-512.svg --vscode
+```
+
+Custom output directory:
+
+```bash
+svg-scale -i icon-512.svg --vscode --out-dir ./custom-dist
 ```
 
 Outputs:
@@ -37,24 +44,26 @@ images/dist/
 
 ```bash
 # Specify scale ratio directly
-svg-scale input.svg --scale 0.5 -o output.svg
+svg-scale -i input.svg --scale 0.5 -o output.svg
 
 # Calculate scale from source/target size
-svg-scale input.svg --from 512 --to 128 -o output.svg
+svg-scale -i input.svg --from 512 --to 128 -o output.svg
 
 # Batch output multiple sizes
-svg-scale input.svg --from 512 --to 16,32,48,128 --out-dir ./dist
+svg-scale -i input.svg --from 512 --to 16,32,48,128 --out-dir ./dist
 ```
 
 ### Options
 
 | Option | Description |
 |--------|-------------|
-| `--from <SIZE>` | Original size (optional) |
+| `-i, --input <FILE>` | Input SVG file |
+| `--vscode` | VSCode icon pipeline mode (512→128, outputs SVG+PNG) |
+| `--from <SIZE>` | Original size (optional, auto-detected from SVG) |
 | `--to <SIZE\|LIST>` | Target size, e.g. `128` or `16,32,48` |
 | `--scale <FLOAT>` | Direct scale ratio (highest priority) |
 | `-o, --output <FILE>` | Output file (single size) |
-| `--out-dir <DIR>` | Batch output directory |
+| `--out-dir <DIR>` | Output directory (for --vscode or batch mode) |
 | `--fix-stroke` | Remove non-scaling-stroke |
 | `--precision <N>` | Decimal precision [default: 4] |
 

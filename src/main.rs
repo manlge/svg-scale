@@ -11,6 +11,8 @@ use scale::ScaleCtx;
 
 #[derive(Parser)]
 struct Cli {
+    /// 输入 SVG 文件
+    #[arg(short, long)]
     input: String,
 
     #[arg(long)]
@@ -58,7 +60,7 @@ fn main() -> Result<()> {
 
 fn write_svg(doc: &roxmltree::Document, ctx: &ScaleCtx) -> Result<String> {
     let mut writer = xmlwriter::XmlWriter::new(xmlwriter::Options::default());
-    svg::walk(doc.root_element(), &mut writer, ctx);
+    svg::walk(doc.root_element(), &mut writer, ctx)?;
     let mut svg = writer.end_document();
 
     // Prepend XML declaration
@@ -214,7 +216,12 @@ fn vscode_pipeline(cli: &Cli) -> Result<()> {
 
     let scaled_svg = write_svg(&doc, &ctx)?;
 
-    let out_dir = Path::new("images/dist");
+    // Use --out-dir if provided, otherwise default to images/dist
+    let out_dir: &Path = if let Some(dir) = &cli.out_dir {
+        Path::new(dir)
+    } else {
+        Path::new("images/dist")
+    };
     fs::create_dir_all(out_dir)?;
 
     let svg_out = out_dir.join("icon.svg");
@@ -223,13 +230,13 @@ fn vscode_pipeline(cli: &Cli) -> Result<()> {
     let png_out = out_dir.join("icon.png");
 
     let status = Command::new("rsvg-convert")
-        .arg(svg_out.to_str().unwrap())
+        .arg(svg_out.to_str().context("non-utf8 svg path")?)
         .arg("-w")
         .arg("128")
         .arg("-h")
         .arg("128")
         .arg("-o")
-        .arg(png_out.to_str().unwrap())
+        .arg(png_out.to_str().context("non-utf8 png path")?)
         .status()
         .context("failed to execute rsvg-convert")?;
 
