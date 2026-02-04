@@ -67,6 +67,20 @@ svg-scale -i input.svg --from 512 --to 16,32,48,128 --out-dir ./dist
 | `--fix-stroke` | Remove non-scaling-stroke |
 | `--precision <N>` | Decimal precision [default: 4] |
 
+## What Is Scaled
+
+This tool performs geometry-true scaling of path data, common shape attributes, and transform values.
+
+Supported (tested) areas include:
+- `path` data (including arc flags handling)
+- `viewBox`
+- Shape attributes: `x/y/cx/cy/r/rx/ry/x1/y1/x2/y2/width/height/stroke-width`
+- Transforms: `translate`, `rotate` (with center), `scale`, `matrix`
+- Non-scaling strokes (`vector-effect="non-scaling-stroke"`) preserve `stroke-width` unless `--fix-stroke` is used
+- Scientific notation in transforms and `viewBox` (e.g. `1e2`, `1E2`)
+
+Fixtures and tests also cover transform combinations, nested groups, and skew transforms.
+
 ## Requirements
 
 - Rust
