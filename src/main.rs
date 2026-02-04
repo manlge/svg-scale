@@ -1,5 +1,6 @@
 use anyhow::*;
 use clap::Parser;
+use std::result::Result::Ok;
 use std::{fs, path::Path, process::Command};
 
 mod path;
@@ -88,47 +89,62 @@ fn write_svg(doc: &roxmltree::Document, ctx: &ScaleCtx) -> Result<String> {
     Ok(svg)
 }
 
+fn get_svg_size(doc: &roxmltree::Document) -> Option<f64> {
+    let root = doc.root_element();
+    // Try width attribute first
+    if let Some(w) = root.attribute("width") {
+        // Remove "px" if present and parse
+        let w_str = w.trim_end_matches("px");
+        if let Ok(val) = w_str.parse::<f64>() {
+            return Some(val);
+        }
+    }
+    // Try viewBox
+    if let Some(view_box) = root.attribute("viewBox") {
+        let parts: Vec<&str> = view_box.split_whitespace().collect();
+        if parts.len() == 4 {
+            if let Ok(w) = parts[2].parse::<f64>() {
+                return Some(w);
+            }
+        }
+    }
+    None
+}
+
 fn normal_pipeline(cli: &Cli) -> Result<()> {
-    // 计算比例
-    let scale = if let Some(s) = cli.scale {
-        s
-    } else if let (Some(from), Some(to)) = (cli.from, &cli.to) {
-        let to_values: Vec<f64> = to
-            .split(',')
-            .map(|s| s.trim().parse())
-            .collect::<Result<_, _>>()?;
-        to_values[0] / from
-    } else {
-        bail!("必须指定 --scale 或 --from 和 --to");
-    };
-
-    let ctx = ScaleCtx {
-        scale,
-        precision: cli.precision,
-        fix_stroke: cli.fix_stroke,
-    };
-
+    // 1. Parse SVG first
     let input_svg = fs::read_to_string(&cli.input)?;
     let doc = roxmltree::Document::parse(&input_svg)?;
 
-    let scaled_svg = write_svg(&doc, &ctx)?;
+    // 2. Determine 'from' size
+    let from_size = if let Some(f) = cli.from {
+        f
+    } else {
+        match get_svg_size(&doc) {
+            Some(s) => {
+                println!("自动检测到原始尺寸: {}", s);
+                s
+            }
+            None => bail!("未能从SVG检测到尺寸，请使用 --from 指定原始尺寸"),
+        }
+    };
 
-    // 输出文件
-    if let Some(output) = &cli.output {
-        fs::write(output, &scaled_svg)?;
-        println!("输出: {}", output);
-    } else if let Some(out_dir) = &cli.out_dir {
-        let to_values: Vec<f64> = cli
+    // 3. Calculate scale or output modes
+    // Check if we are in single output mode or multi-output directory mode
+    if let Some(out_dir) = &cli.out_dir {
+        // Multi-file output mode (requires --to)
+        let to_str = cli
             .to
             .as_ref()
-            .unwrap()
+            .context("批量输出模式需要指定 --to (例如: --to 16,32,48)")?;
+        let to_values: Vec<f64> = to_str
             .split(',')
             .map(|s| s.trim().parse())
             .collect::<Result<_, _>>()?;
 
         fs::create_dir_all(out_dir)?;
         for (_, &to_size) in to_values.iter().enumerate() {
-            let scale_i = to_size / cli.from.unwrap_or(1.0);
+            let scale_i = to_size / from_size;
             let ctx_i = ScaleCtx {
                 scale: scale_i,
                 precision: cli.precision,
@@ -146,8 +162,38 @@ fn normal_pipeline(cli: &Cli) -> Result<()> {
             fs::write(&out_path, &svg_i)?;
             println!("输出: {}", out_path.display());
         }
+        return Ok(());
+    }
+
+    // Single file output or stdout mode
+    let scale = if let Some(s) = cli.scale {
+        s
+    } else if let Some(to_str) = &cli.to {
+        // Only verify first value if multiple provided, though single output usually implies single 'to'
+        let to_values: Vec<f64> = to_str
+            .split(',')
+            .map(|s| s.trim().parse())
+            .collect::<Result<_, _>>()?;
+        // Use the first target size for single file output
+        to_values[0] / from_size
     } else {
-        // 默认输出到 stdout
+        bail!("必须指定 --scale 或 --to");
+    };
+
+    let ctx = ScaleCtx {
+        scale,
+        precision: cli.precision,
+        fix_stroke: cli.fix_stroke,
+    };
+
+    let scaled_svg = write_svg(&doc, &ctx)?;
+
+    // Output file
+    if let Some(output) = &cli.output {
+        fs::write(output, &scaled_svg)?;
+        println!("输出: {}", output);
+    } else {
+        // Default to stdout
         println!("{}", scaled_svg);
     }
 
