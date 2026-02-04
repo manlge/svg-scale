@@ -6,6 +6,7 @@ use std::{fs, path::Path, process::Command};
 mod path;
 mod scale;
 mod svg;
+mod transform;
 
 use scale::ScaleCtx;
 

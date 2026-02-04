@@ -1,424 +1,20 @@
+use crate::{
+    path::scale_path,
+    scale::ScaleCtx,
+    transform::{parse_transform_list, scale_transform_value},
+};
 use anyhow::{Context, Result};
-use crate::{path::scale_path, scale::ScaleCtx};
 use roxmltree::Node;
 use xmlwriter::XmlWriter;
 
 /// Check if transform contains any non-translate components
 fn has_non_translate_transform(transform: &str) -> Result<bool> {
     let list = parse_transform_list(transform)?;
-    Ok(list.iter().any(|(name, _)| name != "translate"))
+    Ok(list.iter().any(|t| t.name != "translate"))
 }
 
-/// Scale translate values in transform attribute (legacy, kept for potential future use)
-/// translate(a,b) -> translate(a*scale,b*scale)
-#[allow(dead_code)]
-fn scale_transform(v: &str, scale: f64) -> Result<String> {
-    // Match translate(a,b) or translate(a) pattern
-    if let Some(captures) = regex::Regex::new(
-        r"translate\((-?\d*\.?\d+)(?:,\s*(-?\d*\.?\d+))?\)",
-    )
-    .context("invalid translate() regex")?
-    .captures(v)
-    {
-        let tx: f64 = captures
-            .get(1)
-            .context("missing translate x")?
-            .as_str()
-            .parse()
-            .context("invalid translate x")?;
-        let ty: f64 = captures
-            .get(2)
-            .map(|m| m.as_str().parse().context("invalid translate y"))
-            .transpose()?
-            .unwrap_or(0.0);
-        let suffix = captures.get(0).context("missing translate match")?.as_str();
-
-        // Remove translate from transform
-        let rest = v.replace(suffix, "");
-
-        Ok(format!(
-            "{}{}translate({},{})",
-            rest,
-            if rest.ends_with('(') || rest.ends_with(' ') {
-                ""
-            } else {
-                " "
-            },
-            tx * scale,
-            ty * scale
-        ))
-    } else {
-        Ok(v.to_string())
-    }
-}
-
-/// Scale all transform values appropriately
-/// - translate(x,y): scale x and y
-/// - rotate(angle, cx, cy): scale cx and cy (center point)
-/// - matrix(a,b,c,d,e,f): scale e and f (translation components)
-fn parse_transform_list(v: &str) -> Result<Vec<(String, Vec<f64>)>> {
-    let func_re = regex::Regex::new(r"([a-zA-Z]+)\s*\(([^)]*)\)")
-        .context("invalid transform function regex")?;
-    let num_re = regex::Regex::new(r"[-+]?\d*\.?\d+(?:[eE][+-]?\d+)?")
-        .context("invalid transform number regex")?;
-    let mut out = Vec::new();
-    for caps in func_re.captures_iter(v) {
-        let name = caps.get(1).unwrap().as_str().to_string();
-        let params = caps.get(2).unwrap().as_str();
-        let mut nums = Vec::new();
-        for m in num_re.find_iter(params) {
-            nums.push(m.as_str().parse::<f64>().context("invalid transform number")?);
-        }
-        out.push((name, nums));
-    }
-    Ok(out)
-}
-
-fn mat_mul(a: [f64; 6], b: [f64; 6]) -> [f64; 6] {
-    let (a1, b1, c1, d1, e1, f1) = (a[0], a[1], a[2], a[3], a[4], a[5]);
-    let (a2, b2, c2, d2, e2, f2) = (b[0], b[1], b[2], b[3], b[4], b[5]);
-    [
-        a1 * a2 + c1 * b2,
-        b1 * a2 + d1 * b2,
-        a1 * c2 + c1 * d2,
-        b1 * c2 + d1 * d2,
-        a1 * e2 + c1 * f2 + e1,
-        b1 * e2 + d1 * f2 + f1,
-    ]
-}
-
-fn clean_matrix_value(v: f64) -> f64 {
-    if v.abs() < 1e-12 {
-        0.0
-    } else {
-        v
-    }
-}
-
-fn transform_to_matrix(list: &[(String, Vec<f64>)]) -> Result<[f64; 6]> {
-    let mut m = [1.0, 0.0, 0.0, 1.0, 0.0, 0.0];
-    for (name, nums) in list {
-        let mi = match name.as_str() {
-            "translate" => {
-                let tx = nums.get(0).copied().unwrap_or(0.0);
-                let ty = nums.get(1).copied().unwrap_or(0.0);
-                [1.0, 0.0, 0.0, 1.0, tx, ty]
-            }
-            "scale" => {
-                let sx = nums.get(0).copied().unwrap_or(1.0);
-                let sy = nums.get(1).copied().unwrap_or(sx);
-                [sx, 0.0, 0.0, sy, 0.0, 0.0]
-            }
-            "rotate" => {
-                let angle = nums.get(0).copied().unwrap_or(0.0);
-                let rad = angle.to_radians();
-                let cos = rad.cos();
-                let sin = rad.sin();
-                if nums.len() >= 3 {
-                    let cx = nums[1];
-                    let cy = nums[2];
-                    let t1 = [1.0, 0.0, 0.0, 1.0, cx, cy];
-                    let r = [cos, sin, -sin, cos, 0.0, 0.0];
-                    let t2 = [1.0, 0.0, 0.0, 1.0, -cx, -cy];
-                    mat_mul(t1, mat_mul(r, t2))
-                } else {
-                    [cos, sin, -sin, cos, 0.0, 0.0]
-                }
-            }
-            "skewX" => {
-                let angle = nums.get(0).copied().unwrap_or(0.0);
-                [1.0, 0.0, angle.to_radians().tan(), 1.0, 0.0, 0.0]
-            }
-            "skewY" => {
-                let angle = nums.get(0).copied().unwrap_or(0.0);
-                [1.0, angle.to_radians().tan(), 0.0, 1.0, 0.0, 0.0]
-            }
-            "matrix" => {
-                if nums.len() < 6 {
-                    return Err(anyhow::anyhow!("matrix() requires 6 parameters"));
-                }
-                [nums[0], nums[1], nums[2], nums[3], nums[4], nums[5]]
-            }
-            _ => return Err(anyhow::anyhow!("unsupported transform: {}", name)),
-        };
-        m = mat_mul(m, mi);
-    }
-    Ok(m)
-}
-
-fn scale_transform_all(v: &str, scale: f64) -> Result<String> {
-    let list = parse_transform_list(v)?;
-    let has_non_translate = list.iter().any(|(name, _)| name != "translate");
-    if has_non_translate {
-        if list.len() == 1 {
-            match list[0].0.as_str() {
-                "scale" => {
-                    // fall through to keep scale() formatting
-                }
-                "matrix" => {
-                    let m = transform_to_matrix(&list)?;
-                    return Ok(format!(
-                        "matrix({},{},{},{},{},{})",
-                        clean_matrix_value(m[0] * scale),
-                        clean_matrix_value(m[1] * scale),
-                        clean_matrix_value(m[2] * scale),
-                        clean_matrix_value(m[3] * scale),
-                        clean_matrix_value(m[4] * scale),
-                        clean_matrix_value(m[5] * scale)
-                    ));
-                }
-                _ => {
-                    let m = transform_to_matrix(&list)?;
-                    return Ok(format!(
-                        "matrix({},{},{},{},{},{})",
-                        clean_matrix_value(m[0] * scale),
-                        clean_matrix_value(m[1] * scale),
-                        clean_matrix_value(m[2] * scale),
-                        clean_matrix_value(m[3] * scale),
-                        clean_matrix_value(m[4] * scale),
-                        clean_matrix_value(m[5] * scale)
-                    ));
-                }
-            }
-        } else {
-            let m = transform_to_matrix(&list)?;
-            return Ok(format!(
-                "matrix({},{},{},{},{},{})",
-                clean_matrix_value(m[0] * scale),
-                clean_matrix_value(m[1] * scale),
-                clean_matrix_value(m[2] * scale),
-                clean_matrix_value(m[3] * scale),
-                clean_matrix_value(m[4] * scale),
-                clean_matrix_value(m[5] * scale)
-            ));
-        }
-    }
-
-    let mut result = v.to_string();
-
-    // Handle scale(sx, sy) - scale all occurrences
-    let scale_re = regex::Regex::new(
-        r"scale\(\s*(-?\d*\.?\d+(?:[eE][+-]?\d+)?)(?:\s*(?:,|\s)\s*(-?\d*\.?\d+(?:[eE][+-]?\d+)?))?\s*\)",
-    )
-    .context("invalid scale() regex")?;
-    let mut err: Option<anyhow::Error> = None;
-    result = scale_re
-        .replace_all(&result, |caps: &regex::Captures| {
-            if err.is_some() {
-                return caps.get(0).map(|m| m.as_str()).unwrap_or("").to_string();
-            }
-            let sx: f64 = match caps
-                .get(1)
-                .context("missing scale x")
-                .and_then(|m| m.as_str().parse().context("invalid scale x"))
-            {
-                Ok(v) => v,
-                Err(e) => {
-                    err = Some(e);
-                    return String::new();
-                }
-            };
-            let sy_match = caps.get(2);
-            let sy: f64 = match sy_match
-                .map(|m| m.as_str().parse().context("invalid scale y"))
-                .transpose()
-            {
-                Ok(Some(v)) => v,
-                Ok(None) => sx,
-                Err(e) => {
-                    err = Some(e);
-                    return String::new();
-                }
-            };
-            if sy_match.is_some() {
-                format!("scale({},{})", sx * scale, sy * scale)
-            } else {
-                format!("scale({})", sx * scale)
-            }
-        })
-        .to_string();
-
-    if let Some(e) = err.take() {
-        return Err(e);
-    }
-
-    // Handle translate(x, y) or translate(x) - scale all occurrences
-    let translate_re = regex::Regex::new(
-        r"translate\(\s*(-?\d*\.?\d+(?:[eE][+-]?\d+)?)(?:\s*(?:,|\s)\s*(-?\d*\.?\d+(?:[eE][+-]?\d+)?))?\s*\)",
-    )
-    .context("invalid translate() regex")?;
-    let mut err: Option<anyhow::Error> = None;
-    result = translate_re
-        .replace_all(&result, |caps: &regex::Captures| {
-            if err.is_some() {
-                return caps.get(0).map(|m| m.as_str()).unwrap_or("").to_string();
-            }
-            let tx: f64 = match caps
-                .get(1)
-                .context("missing translate x")
-                .and_then(|m| m.as_str().parse().context("invalid translate x"))
-            {
-                Ok(v) => v,
-                Err(e) => {
-                    err = Some(e);
-                    return String::new();
-                }
-            };
-            let ty: f64 = match caps
-                .get(2)
-                .map(|m| m.as_str().parse().context("invalid translate y"))
-                .transpose()
-            {
-                Ok(Some(v)) => v,
-                Ok(None) => 0.0,
-                Err(e) => {
-                    err = Some(e);
-                    return String::new();
-                }
-            };
-            format!("translate({},{})", tx * scale, ty * scale)
-        })
-        .to_string();
-
-    // Handle rotate(angle, cx, cy) - scale all occurrences that include a center
-    let rotate_re = regex::Regex::new(
-        r"rotate\(\s*(-?\d*\.?\d+(?:[eE][+-]?\d+)?)\s*(?:,|\s)\s*(-?\d*\.?\d+(?:[eE][+-]?\d+)?)\s*(?:,|\s)\s*(-?\d*\.?\d+(?:[eE][+-]?\d+)?)\s*\)",
-    )
-    .context("invalid rotate() regex")?;
-    result = rotate_re
-        .replace_all(&result, |caps: &regex::Captures| {
-            if err.is_some() {
-                return caps.get(0).map(|m| m.as_str()).unwrap_or("").to_string();
-            }
-            let angle: f64 = match caps
-                .get(1)
-                .context("missing rotate angle")
-                .and_then(|m| m.as_str().parse().context("invalid rotate angle"))
-            {
-                Ok(v) => v,
-                Err(e) => {
-                    err = Some(e);
-                    return String::new();
-                }
-            };
-            let cx: f64 = match caps
-                .get(2)
-                .context("missing rotate cx")
-                .and_then(|m| m.as_str().parse().context("invalid rotate cx"))
-            {
-                Ok(v) => v,
-                Err(e) => {
-                    err = Some(e);
-                    return String::new();
-                }
-            };
-            let cy: f64 = match caps
-                .get(3)
-                .context("missing rotate cy")
-                .and_then(|m| m.as_str().parse().context("invalid rotate cy"))
-            {
-                Ok(v) => v,
-                Err(e) => {
-                    err = Some(e);
-                    return String::new();
-                }
-            };
-            format!("rotate({},{},{})", angle, cx * scale, cy * scale)
-        })
-        .to_string();
-
-    // Handle matrix(a, b, c, d, e, f) - scale translation components e and f (all occurrences)
-    let matrix_re = regex::Regex::new(
-        r"matrix\(\s*(-?\d*\.?\d+(?:[eE][+-]?\d+)?)\s*,?\s*(-?\d*\.?\d+(?:[eE][+-]?\d+)?)\s*,?\s*(-?\d*\.?\d+(?:[eE][+-]?\d+)?)\s*,?\s*(-?\d*\.?\d+(?:[eE][+-]?\d+)?)\s*,?\s*(-?\d*\.?\d+(?:[eE][+-]?\d+)?)\s*,?\s*(-?\d*\.?\d+(?:[eE][+-]?\d+)?)\s*\)",
-    )
-    .context("invalid matrix() regex")?;
-    result = matrix_re
-        .replace_all(&result, |caps: &regex::Captures| {
-            if err.is_some() {
-                return caps.get(0).map(|m| m.as_str()).unwrap_or("").to_string();
-            }
-            let a: f64 = match caps
-                .get(1)
-                .context("missing matrix a")
-                .and_then(|m| m.as_str().parse().context("invalid matrix a"))
-            {
-                Ok(v) => v,
-                Err(e) => {
-                    err = Some(e);
-                    return String::new();
-                }
-            };
-            let b: f64 = match caps
-                .get(2)
-                .context("missing matrix b")
-                .and_then(|m| m.as_str().parse().context("invalid matrix b"))
-            {
-                Ok(v) => v,
-                Err(e) => {
-                    err = Some(e);
-                    return String::new();
-                }
-            };
-            let c: f64 = match caps
-                .get(3)
-                .context("missing matrix c")
-                .and_then(|m| m.as_str().parse().context("invalid matrix c"))
-            {
-                Ok(v) => v,
-                Err(e) => {
-                    err = Some(e);
-                    return String::new();
-                }
-            };
-            let d: f64 = match caps
-                .get(4)
-                .context("missing matrix d")
-                .and_then(|m| m.as_str().parse().context("invalid matrix d"))
-            {
-                Ok(v) => v,
-                Err(e) => {
-                    err = Some(e);
-                    return String::new();
-                }
-            };
-            let e: f64 = match caps
-                .get(5)
-                .context("missing matrix e")
-                .and_then(|m| m.as_str().parse().context("invalid matrix e"))
-            {
-                Ok(v) => v,
-                Err(e) => {
-                    err = Some(e);
-                    return String::new();
-                }
-            };
-            let f: f64 = match caps
-                .get(6)
-                .context("missing matrix f")
-                .and_then(|m| m.as_str().parse().context("invalid matrix f"))
-            {
-                Ok(v) => v,
-                Err(e) => {
-                    err = Some(e);
-                    return String::new();
-                }
-            };
-            format!(
-                "matrix({},{},{},{},{},{})",
-                a * scale,
-                b * scale,
-                c * scale,
-                d * scale,
-                e * scale,
-                f * scale
-            )
-        })
-        .to_string();
-
-    if let Some(e) = err {
-        return Err(e);
-    }
-    Ok(result)
+fn scale_transform_all(v: &str, scale: f64, precision: usize) -> Result<String> {
+    scale_transform_value(v, scale, precision)
 }
 
 fn walk_impl(
@@ -450,7 +46,10 @@ fn walk_impl(
                     if node_id.is_empty() {
                         format!("transform parse failed on <{}>", tag_name)
                     } else {
-                        format!("transform parse failed on <{} id=\"{}\">", tag_name, node_id)
+                        format!(
+                            "transform parse failed on <{} id=\"{}\">",
+                            tag_name, node_id
+                        )
                     }
                 })?;
 
@@ -484,7 +83,10 @@ fn walk_impl(
                                 if node_id.is_empty() {
                                     format!("scale path failed on <{}>", tag_name)
                                 } else {
-                                    format!("scale path failed on <{} id=\"{}\">", tag_name, node_id)
+                                    format!(
+                                        "scale path failed on <{} id=\"{}\">",
+                                        tag_name, node_id
+                                    )
                                 }
                             })
                         }
@@ -497,19 +99,22 @@ fn walk_impl(
                         } else if k == "stroke-width" && has_non_scaling_stroke && !ctx.fix_stroke {
                             Ok(v.to_string())
                         } else {
-                        let num_part = if v.ends_with("px") {
-                            &v[..v.len() - 2]
-                        } else {
-                            v
-                        };
-                        let num: f64 = num_part.parse().with_context(|| {
-                            if node_id.is_empty() {
-                                format!("invalid {} on <{}>: {}", k, tag_name, v)
+                            let num_part = if v.ends_with("px") {
+                                &v[..v.len() - 2]
                             } else {
-                                format!("invalid {} on <{} id=\"{}\">: {}", k, tag_name, node_id, v)
-                            }
-                        })?;
-                        Ok(ctx.fmt(num * ctx.scale))
+                                v
+                            };
+                            let num: f64 = num_part.parse().with_context(|| {
+                                if node_id.is_empty() {
+                                    format!("invalid {} on <{}>: {}", k, tag_name, v)
+                                } else {
+                                    format!(
+                                        "invalid {} on <{} id=\"{}\">: {}",
+                                        k, tag_name, node_id, v
+                                    )
+                                }
+                            })?;
+                            Ok(ctx.fmt(num * ctx.scale))
                         }
                     }
 
@@ -533,13 +138,18 @@ fn walk_impl(
                         Ok(parts?.join(" "))
                     }
 
-                    "transform" => scale_transform_all(v, ctx.scale).with_context(|| {
-                        if node_id.is_empty() {
-                            format!("transform scale failed on <{}>", tag_name)
-                        } else {
-                            format!("transform scale failed on <{} id=\"{}\">", tag_name, node_id)
-                        }
-                    }),
+                    "transform" => {
+                        scale_transform_all(v, ctx.scale, ctx.precision).with_context(|| {
+                            if node_id.is_empty() {
+                                format!("transform scale failed on <{}>", tag_name)
+                            } else {
+                                format!(
+                                    "transform scale failed on <{} id=\"{}\">",
+                                    tag_name, node_id
+                                )
+                            }
+                        })
+                    }
 
                     _ => Ok(v.to_string()),
                 };
@@ -579,7 +189,15 @@ mod tests {
     fn render_scaled_svg(input: &str, scale: f64) -> Result<String> {
         let doc = roxmltree::Document::parse(input)?;
         let mut writer = XmlWriter::new(xmlwriter::Options::default());
-        walk(doc.root_element(), &mut writer, &ScaleCtx { scale, precision: 4, fix_stroke: false })?;
+        walk(
+            doc.root_element(),
+            &mut writer,
+            &ScaleCtx {
+                scale,
+                precision: 4,
+                fix_stroke: false,
+            },
+        )?;
         Ok(writer.end_document())
     }
 
@@ -587,8 +205,8 @@ mod tests {
     fn transform_scale_should_be_scaled_when_path_is_not() -> Result<()> {
         let input = r#"<svg xmlns="http://www.w3.org/2000/svg"><path d="M10 0 L20 0" transform="scale(2)"/></svg>"#;
         let out = render_scaled_svg(input, 0.5)?;
-        let ok = out.contains(r#"transform="scale(1)""#)
-            || out.contains(r#"transform="scale(1,1)""#);
+        let ok =
+            out.contains(r#"transform="scale(1)""#) || out.contains(r#"transform="scale(1,1)""#);
         assert!(ok, "expected scaled transform, got: {out}");
         Ok(())
     }
@@ -751,7 +369,9 @@ mod tests {
         assert!(out.contains(r#"x="5""#) && out.contains(r#"y="10""#));
         assert!(out.contains(r#"width="15""#) && out.contains(r#"height="20""#));
         assert!(out.contains(r#"stroke-width="1""#));
-        assert!(out.contains(r#"cx="25""#) && out.contains(r#"cy="30""#) && out.contains(r#"r="5""#));
+        assert!(
+            out.contains(r#"cx="25""#) && out.contains(r#"cy="30""#) && out.contains(r#"r="5""#)
+        );
         Ok(())
     }
 

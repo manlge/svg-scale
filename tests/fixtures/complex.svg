@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 100">
+  <g transform="translate(10,20)">
+    <path d="M10 0 L20 0" vector-effect="non-scaling-stroke" stroke-width="2"/>
+  </g>
+  <g transform="scale(2)">
+    <path d="M5 5 L15 15"/>
+  </g>
+  <circle cx="40" cy="50" r="8" transform="rotate(45 40 50)"/>
+  <path d="M0 0 A 5 5 0 1 0 10 10"/>
+</svg>

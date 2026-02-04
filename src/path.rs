@@ -1,132 +1,146 @@
-use anyhow::{Context, Result};
+use anyhow::Result;
 use crate::scale::ScaleCtx;
+use nom::{
+    branch::alt,
+    bytes::complete::take_while1,
+    character::complete::one_of,
+    combinator::recognize,
+    multi::many0,
+    number::complete::double,
+    IResult,
+};
 pub fn scale_path(d: &str, ctx: &ScaleCtx) -> Result<String> {
-    let bytes = d.as_bytes();
-    let mut i = 0usize;
+    let (rest, parts) = match parse_parts(d) {
+        Ok(v) => v,
+        Err(nom::Err::Error(e)) | Err(nom::Err::Failure(e)) => {
+            let pos = d.len().saturating_sub(e.input.len());
+            return Err(anyhow::anyhow!(format_path_error(d, pos)));
+        }
+        Err(_) => return Err(anyhow::anyhow!("invalid path data")),
+    };
+    if !rest.is_empty() {
+        let pos = d.len().saturating_sub(rest.len());
+        return Err(anyhow::anyhow!(format_path_error(d, pos)));
+    }
+
     let mut cmd: Option<char> = None;
     let mut param_index: usize = 0;
-    let mut replacements: Vec<(usize, usize, String)> = Vec::new();
+    let mut out = String::with_capacity(d.len());
 
-    while i < bytes.len() {
-        let c = bytes[i] as char;
-        if c.is_ascii_alphabetic() {
-            if matches!(
-                c,
-                'M' | 'm'
-                    | 'Z'
-                    | 'z'
-                    | 'L'
-                    | 'l'
-                    | 'H'
-                    | 'h'
-                    | 'V'
-                    | 'v'
-                    | 'C'
-                    | 'c'
-                    | 'S'
-                    | 's'
-                    | 'Q'
-                    | 'q'
-                    | 'T'
-                    | 't'
-                    | 'A'
-                    | 'a'
-            ) {
+    for part in parts {
+        match part {
+            Part::Sep(s) => out.push_str(s),
+            Part::Cmd(c) => {
                 cmd = Some(c);
                 param_index = 0;
+                out.push(c);
             }
-            i += 1;
-            continue;
-        }
-
-        if is_number_start(c) {
-            let start = i;
-            let end = parse_number(bytes, i);
-            let s = &d[start..end];
-            let v: f64 = s
-                .parse()
-                .with_context(|| "failed to parse path number")?;
-
-            let should_scale = match cmd {
-                Some('A') | Some('a') => {
-                    let idx = param_index % 7;
-                    matches!(idx, 0 | 1 | 5 | 6)
+            Part::Num { raw, val } => {
+                let should_scale = match cmd {
+                    Some('A') | Some('a') => {
+                        let idx = param_index % 7;
+                        matches!(idx, 0 | 1 | 5 | 6)
+                    }
+                    _ => true,
+                };
+                if should_scale {
+                    out.push_str(&ctx.fmt(val * ctx.scale));
+                } else {
+                    out.push_str(raw);
                 }
-                _ => true,
-            };
-
-            let out = if should_scale {
-                ctx.fmt(v * ctx.scale)
-            } else {
-                s.to_string()
-            };
-
-            replacements.push((start, end, out));
-            param_index = param_index.saturating_add(1);
-            i = end;
-            continue;
+                param_index = param_index.saturating_add(1);
+            }
         }
-
-        i += 1;
     }
 
-    if replacements.is_empty() {
-        return Ok(d.to_string());
-    }
-
-    let mut out = String::with_capacity(d.len());
-    let mut last = 0usize;
-    for (start, end, rep) in replacements {
-        out.push_str(&d[last..start]);
-        out.push_str(&rep);
-        last = end;
-    }
-    out.push_str(&d[last..]);
     Ok(out)
 }
 
-fn is_number_start(c: char) -> bool {
-    c == '-' || c == '+' || c == '.' || c.is_ascii_digit()
+fn format_path_error(input: &str, pos: usize) -> String {
+    let start = pos.saturating_sub(10);
+    let end = (pos + 10).min(input.len());
+    let snippet = &input[start..end];
+    let char_index = input[..pos].chars().count();
+    let reason = classify_path_error(input, pos);
+    format!(
+        "invalid path data at char {} (byte {}) near '{}': {}",
+        char_index, pos, snippet, reason
+    )
 }
 
-fn parse_number(bytes: &[u8], start: usize) -> usize {
-    let mut i = start;
-    let mut has_dot = false;
-    let mut has_exp = false;
-
-    if i < bytes.len() {
-        let c = bytes[i] as char;
-        if c == '+' || c == '-' {
-            i += 1;
-        }
+fn classify_path_error(input: &str, pos: usize) -> &'static str {
+    if pos >= input.len() {
+        return "unexpected end of input";
     }
-
-    while i < bytes.len() {
-        let c = bytes[i] as char;
-        if c.is_ascii_digit() {
-            i += 1;
-            continue;
-        }
-        if c == '.' && !has_dot && !has_exp {
-            has_dot = true;
-            i += 1;
-            continue;
-        }
-        if (c == 'e' || c == 'E') && !has_exp {
-            has_exp = true;
-            i += 1;
-            if i < bytes.len() {
-                let sign = bytes[i] as char;
-                if sign == '+' || sign == '-' {
-                    i += 1;
-                }
-            }
-            continue;
-        }
-        break;
+    let rest = &input[pos..];
+    let mut chars = rest.chars();
+    let c = match chars.next() {
+        Some(c) => c,
+        None => return "unexpected end of input",
+    };
+    let is_cmd = matches!(
+        c,
+        'M' | 'm'
+            | 'Z'
+            | 'z'
+            | 'L'
+            | 'l'
+            | 'H'
+            | 'h'
+            | 'V'
+            | 'v'
+            | 'C'
+            | 'c'
+            | 'S'
+            | 's'
+            | 'Q'
+            | 'q'
+            | 'T'
+            | 't'
+            | 'A'
+            | 'a'
+    );
+    if c.is_ascii_alphabetic() && !is_cmd {
+        return "invalid command";
     }
+    if c.is_ascii_digit() || c == '-' || c == '+' || c == '.' || c == 'e' || c == 'E' {
+        return "invalid number";
+    }
+    if c.is_whitespace() || c == ',' {
+        return "invalid separator";
+    }
+    "unexpected token"
+}
 
-    i
+#[derive(Debug)]
+enum Part<'a> {
+    Sep(&'a str),
+    Cmd(char),
+    Num { raw: &'a str, val: f64 },
+}
+
+fn is_sep_char(c: char) -> bool {
+    !c.is_ascii_alphabetic() && c != '-' && c != '+' && c != '.' && !c.is_ascii_digit()
+}
+
+fn parse_sep(input: &str) -> IResult<&str, Part<'_>> {
+    let (rest, s) = take_while1(is_sep_char)(input)?;
+    Ok((rest, Part::Sep(s)))
+}
+
+fn parse_cmd(input: &str) -> IResult<&str, Part<'_>> {
+    let (rest, c) = one_of("MmZzLlHhVvCcSsQqTtAa")(input)?;
+    Ok((rest, Part::Cmd(c)))
+}
+
+fn parse_num(input: &str) -> IResult<&str, Part<'_>> {
+    let (rest, raw) = recognize(double)(input)?;
+    let val: f64 = raw.parse().unwrap_or(0.0);
+    Ok((rest, Part::Num { raw, val }))
+}
+
+fn parse_parts(input: &str) -> IResult<&str, Vec<Part<'_>>> {
+    many0(alt((parse_cmd, parse_num, parse_sep)))(input)
 }
 
 #[cfg(test)]
@@ -199,5 +213,29 @@ mod tests {
         let out = scale_path(input, &ctx)?;
         assert_eq!(out, "M0 0 A45 7.5 0 1 0 30 -60");
         Ok(())
+    }
+
+    #[test]
+    fn path_invalid_trailing_garbage_fails() {
+        let ctx = ScaleCtx {
+            scale: 1.0,
+            precision: 4,
+            fix_stroke: false,
+        };
+        let err = scale_path("M10e", &ctx).unwrap_err();
+        assert!(err.to_string().contains("invalid path data at char"));
+        assert!(err.to_string().contains("invalid number"));
+    }
+
+    #[test]
+    fn path_invalid_command_fails() {
+        let ctx = ScaleCtx {
+            scale: 1.0,
+            precision: 4,
+            fix_stroke: false,
+        };
+        let err = scale_path("X10 20", &ctx).unwrap_err();
+        assert!(err.to_string().contains("invalid path data at char"));
+        assert!(err.to_string().contains("invalid command"));
     }
 }
