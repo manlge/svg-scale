@@ -1,0 +1,161 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+    tags: [v*]
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      tag_name:
+        description: "Release tag (e.g. v0.1.0)"
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  prepare-tag:
+    name: Prepare Tag
+    if: github.event_name == 'workflow_dispatch' && startsWith(inputs.tag_name, 'v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: Create tag if missing
+        env:
+          TAG_NAME: ${{ inputs.tag_name }}
+        run: |
+          set -euo pipefail
+          if git ls-remote --tags origin "refs/tags/${TAG_NAME}" | grep -q "${TAG_NAME}"; then
+            echo "Tag ${TAG_NAME} already exists."
+            exit 0
+          fi
+          git tag "${TAG_NAME}"
+          git push origin "refs/tags/${TAG_NAME}"
+
+  test:
+    name: Rust (stable)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Format
+        run: cargo fmt --all -- --check
+
+      - name: Clippy
+        run: cargo clippy --all-targets --all-features -- -D warnings
+
+      - name: Test
+        run: cargo test --all --all-features
+
+      - name: Build (release)
+        run: cargo build --release
+
+  build-artifacts:
+    name: Build Artifacts (${{ matrix.target }})
+    if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && startsWith(inputs.tag_name, 'v') && needs.prepare-tag.result == 'success')
+    needs: prepare-tag
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-13
+            target: x86_64-apple-darwin
+          - os: macos-latest
+            target: aarch64-apple-darwin
+          - os: windows-2022
+            target: x86_64-pc-windows-msvc
+          - os: windows-2022
+            target: aarch64-pc-windows-msvc
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag_name || github.ref_name }}
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Install Zig
+        uses: goto-bus-stop/setup-zig@v2
+
+      - name: Install cargo-zigbuild
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-zigbuild
+
+      - name: Build (release)
+        run: cargo zigbuild --release --target ${{ matrix.target }}
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: svg-scale-${{ runner.os }}-${{ matrix.target }}
+          path: target/${{ matrix.target }}/release/svg-scale*
+          if-no-files-found: error
+
+  release:
+    name: GitHub Release
+    if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && startsWith(inputs.tag_name, 'v') && needs.prepare-tag.result == 'success')
+    needs: [prepare-tag, build-artifacts]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      TAG_NAME: ${{ inputs.tag_name || github.ref_name }}
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+
+      - name: Package artifacts
+        run: |
+          set -euo pipefail
+          for dir in dist/*; do
+            if [ -d "$dir" ]; then
+              name="$(basename "$dir")"
+              if [[ "$name" == svg-scale-Windows-* ]]; then
+                (cd "$dir" && zip -r "../${name}.zip" .)
+              else
+                tar -czf "dist/${name}.tar.gz" -C "$dir" .
+              fi
+            fi
+          done
+
+      - name: Generate SHA256 checksums
+        run: |
+          set -euo pipefail
+          cd dist
+          for file in *.zip *.tar.gz; do
+            sha256sum "$file" > "${file}.sha256"
+          done
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: ${{ env.TAG_NAME }}
+          tag_name: ${{ env.TAG_NAME }}
+          generate_release_notes: true
+          files: |
+            dist/*.zip
+            dist/*.tar.gz
+            dist/*.sha256
