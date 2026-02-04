@@ -146,7 +146,7 @@ fn normal_pipeline(cli: &Cli) -> Result<()> {
             .collect::<Result<_, _>>()?;
 
         fs::create_dir_all(out_dir)?;
-        for (_, &to_size) in to_values.iter().enumerate() {
+        for &to_size in to_values.iter() {
             let scale_i = to_size / from_size;
             let ctx_i = ScaleCtx {
                 scale: scale_i,

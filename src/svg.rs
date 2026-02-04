@@ -444,7 +444,7 @@ fn merge_style_props(base: &mut Vec<(String, String)>, other: &[(String, String)
 fn node_class_list<'a>(node: Node<'a, 'a>) -> Vec<&'a str> {
     node.attribute("class")
         .map(|s| s.split_whitespace().collect())
-        .unwrap_or_else(Vec::new)
+        .unwrap_or_default()
 }
 
 fn node_id<'a>(node: Node<'a, 'a>) -> &'a str {
@@ -732,9 +732,8 @@ fn walk_impl(
                         if ancestor_has_non_translate_transform
                             || has_non_translate_transform
                             || skip_scale_self
+                            || (k == "stroke-width" && has_non_scaling_stroke && !ctx.fix_stroke)
                         {
-                            Ok(v.to_string())
-                        } else if k == "stroke-width" && has_non_scaling_stroke && !ctx.fix_stroke {
                             Ok(v.to_string())
                         } else {
                             scale_length_value(v, ctx).with_context(|| {
@@ -754,9 +753,8 @@ fn walk_impl(
                         if ancestor_has_non_translate_transform
                             || has_non_translate_transform
                             || skip_scale_self
+                            || v.trim().eq_ignore_ascii_case("none")
                         {
-                            Ok(v.to_string())
-                        } else if v.trim().eq_ignore_ascii_case("none") {
                             Ok(v.to_string())
                         } else {
                             Ok(scale_number_list(v, ctx))

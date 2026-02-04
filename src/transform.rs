@@ -69,17 +69,17 @@ pub fn transform_to_matrix(list: &[Transform]) -> Result<[f64; 6]> {
     for t in list {
         let mi = match t.name.as_str() {
             "translate" => {
-                let tx = t.params.get(0).copied().unwrap_or(0.0);
+                let tx = t.params.first().copied().unwrap_or(0.0);
                 let ty = t.params.get(1).copied().unwrap_or(0.0);
                 [1.0, 0.0, 0.0, 1.0, tx, ty]
             }
             "scale" => {
-                let sx = t.params.get(0).copied().unwrap_or(1.0);
+                let sx = t.params.first().copied().unwrap_or(1.0);
                 let sy = t.params.get(1).copied().unwrap_or(sx);
                 [sx, 0.0, 0.0, sy, 0.0, 0.0]
             }
             "rotate" => {
-                let angle = t.params.get(0).copied().unwrap_or(0.0);
+                let angle = t.params.first().copied().unwrap_or(0.0);
                 let rad = angle.to_radians();
                 let cos = rad.cos();
                 let sin = rad.sin();
@@ -95,11 +95,11 @@ pub fn transform_to_matrix(list: &[Transform]) -> Result<[f64; 6]> {
                 }
             }
             "skewX" => {
-                let angle = t.params.get(0).copied().unwrap_or(0.0);
+                let angle = t.params.first().copied().unwrap_or(0.0);
                 [1.0, 0.0, angle.to_radians().tan(), 1.0, 0.0, 0.0]
             }
             "skewY" => {
-                let angle = t.params.get(0).copied().unwrap_or(0.0);
+                let angle = t.params.first().copied().unwrap_or(0.0);
                 [1.0, angle.to_radians().tan(), 0.0, 1.0, 0.0, 0.0]
             }
             "matrix" => {
@@ -146,19 +146,17 @@ pub fn scale_transform_value(input: &str, scale: f64, precision: usize) -> Resul
 
     let has_non_translate = list.iter().any(|t| t.name != "translate");
     if has_non_translate {
-        if list.len() == 1 {
-            if list[0].name == "scale" {
-                let sx = list[0].params.get(0).copied().unwrap_or(1.0);
-                let sy = list[0].params.get(1).copied().unwrap_or(sx);
-                if list[0].params.len() >= 2 {
-                    return Ok(format!(
-                        "scale({},{})",
-                        fmt_num(sx * scale, precision),
-                        fmt_num(sy * scale, precision)
-                    ));
-                }
-                return Ok(format!("scale({})", fmt_num(sx * scale, precision)));
+        if list.len() == 1 && list[0].name == "scale" {
+            let sx = list[0].params.first().copied().unwrap_or(1.0);
+            let sy = list[0].params.get(1).copied().unwrap_or(sx);
+            if list[0].params.len() >= 2 {
+                return Ok(format!(
+                    "scale({},{})",
+                    fmt_num(sx * scale, precision),
+                    fmt_num(sy * scale, precision)
+                ));
             }
+            return Ok(format!("scale({})", fmt_num(sx * scale, precision)));
         }
 
         let m = transform_to_matrix(&list)?;
@@ -178,7 +176,7 @@ pub fn scale_transform_value(input: &str, scale: f64, precision: usize) -> Resul
         if t.name != "translate" {
             continue;
         }
-        let tx = t.params.get(0).copied().unwrap_or(0.0);
+        let tx = t.params.first().copied().unwrap_or(0.0);
         let ty = t.params.get(1).copied().unwrap_or(0.0);
         if t.params.len() >= 2 {
             parts.push(format!(
