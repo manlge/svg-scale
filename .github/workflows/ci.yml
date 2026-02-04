@@ -77,12 +77,20 @@ jobs:
         include:
           - os: macos-13
             target: x86_64-apple-darwin
+            build_cmd: cargo build --release --target x86_64-apple-darwin
+            use_zig: false
           - os: macos-latest
             target: aarch64-apple-darwin
+            build_cmd: cargo build --release --target aarch64-apple-darwin
+            use_zig: false
           - os: windows-2022
             target: x86_64-pc-windows-msvc
+            build_cmd: cargo build --release --target x86_64-pc-windows-msvc
+            use_zig: false
           - os: windows-2022
             target: aarch64-pc-windows-msvc
+            build_cmd: cargo build --release --target aarch64-pc-windows-msvc
+            use_zig: false
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -95,15 +103,17 @@ jobs:
           targets: ${{ matrix.target }}
 
       - name: Install Zig
+        if: matrix.use_zig
         uses: goto-bus-stop/setup-zig@v2
 
       - name: Install cargo-zigbuild
+        if: matrix.use_zig
         uses: taiki-e/install-action@v2
         with:
           tool: cargo-zigbuild
 
       - name: Build (release)
-        run: cargo zigbuild --release --target ${{ matrix.target }}
+        run: ${{ matrix.build_cmd }}
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
