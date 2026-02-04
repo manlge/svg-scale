@@ -1,13 +1,8 @@
-use anyhow::Result;
 use crate::scale::ScaleCtx;
+use anyhow::Result;
 use nom::{
-    branch::alt,
-    bytes::complete::take_while1,
-    character::complete::one_of,
-    combinator::recognize,
-    multi::many0,
-    number::complete::double,
-    IResult,
+    branch::alt, bytes::complete::take_while1, character::complete::one_of, combinator::recognize,
+    multi::many0, number::complete::double, IResult,
 };
 pub fn scale_path(d: &str, ctx: &ScaleCtx) -> Result<String> {
     let (rest, parts) = match parse_parts(d) {

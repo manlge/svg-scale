@@ -148,7 +148,14 @@ fn scale_number_list_inverse(value: &str, ctx: &ScaleCtx) -> String {
         if buf.is_empty() {
             return;
         }
-        if let Some(scaled) = scale_number_token(buf, &ScaleCtx { scale: inv, precision: ctx.precision, fix_stroke: ctx.fix_stroke }) {
+        if let Some(scaled) = scale_number_token(
+            buf,
+            &ScaleCtx {
+                scale: inv,
+                precision: ctx.precision,
+                fix_stroke: ctx.fix_stroke,
+            },
+        ) {
             out.push_str(&scaled);
         } else {
             out.push_str(buf);
@@ -294,7 +301,11 @@ fn parse_simple_selector(sel: &str) -> Option<SimpleSelector> {
         return None;
     }
 
-    Some(SimpleSelector { element, id, classes })
+    Some(SimpleSelector {
+        element,
+        id,
+        classes,
+    })
 }
 
 fn parse_selector(s: &str) -> Option<StyleSelector> {
@@ -516,19 +527,18 @@ fn scale_style_value(
     match key {
         "transform" => scale_transform_all(val, ctx.scale, ctx.precision)
             .with_context(|| format!("transform scale failed in style: {}", val)),
-        "stroke-width" | "width" | "height" | "x" | "y" | "z" | "cx" | "cy" | "r" | "rx"
-        | "ry" | "x1" | "y1" | "x2" | "y2" | "font-size" | "letter-spacing"
-        | "stroke-dashoffset" | "dx" | "dy" | "markerWidth" | "markerHeight" | "refX"
-        | "refY" | "surfaceScale" | "pointsAtX" | "pointsAtY" | "pointsAtZ" => {
+        "stroke-width" | "width" | "height" | "x" | "y" | "z" | "cx" | "cy" | "r" | "rx" | "ry"
+        | "x1" | "y1" | "x2" | "y2" | "font-size" | "letter-spacing" | "stroke-dashoffset"
+        | "dx" | "dy" | "markerWidth" | "markerHeight" | "refX" | "refY" | "surfaceScale"
+        | "pointsAtX" | "pointsAtY" | "pointsAtZ" => {
             if skip_scale {
                 return Ok(val.to_string());
             }
             if key == "stroke-width" && has_non_scaling_stroke && !ctx.fix_stroke {
                 return Ok(val.to_string());
             }
-            scale_length_value(val, ctx).with_context(|| {
-                format!("invalid {} in style: {}", key, val)
-            })
+            scale_length_value(val, ctx)
+                .with_context(|| format!("invalid {} in style: {}", key, val))
         }
         "stroke-dasharray" => {
             if skip_scale {
@@ -588,7 +598,10 @@ fn walk_impl(
                 || (tag_name == "marker"
                     && (matches!(units_attr, Some("strokeWidth")) || units_attr.is_none()));
             let skip_children_due_to_content_units = if tag_name == "pattern" {
-                matches!(node.attribute("patternContentUnits"), Some("objectBoundingBox"))
+                matches!(
+                    node.attribute("patternContentUnits"),
+                    Some("objectBoundingBox")
+                )
             } else if tag_name == "filter" {
                 matches!(node.attribute("primitiveUnits"), Some("objectBoundingBox"))
             } else if tag_name == "marker" {
@@ -712,10 +725,10 @@ fn walk_impl(
                     }
 
                     "stroke-width" | "width" | "height" | "x" | "y" | "z" | "cx" | "cy" | "r"
-                    | "rx" | "ry" | "x1" | "y1" | "x2" | "y2" | "font-size"
-                    | "letter-spacing" | "stroke-dashoffset" | "fx" | "fy" | "dx" | "dy"
-                    | "markerWidth" | "markerHeight" | "refX" | "refY" | "surfaceScale"
-                    | "pointsAtX" | "pointsAtY" | "pointsAtZ" => {
+                    | "rx" | "ry" | "x1" | "y1" | "x2" | "y2" | "font-size" | "letter-spacing"
+                    | "stroke-dashoffset" | "fx" | "fy" | "dx" | "dy" | "markerWidth"
+                    | "markerHeight" | "refX" | "refY" | "surfaceScale" | "pointsAtX"
+                    | "pointsAtY" | "pointsAtZ" => {
                         if ancestor_has_non_translate_transform
                             || has_non_translate_transform
                             || skip_scale_self
@@ -736,7 +749,8 @@ fn walk_impl(
                             })
                         }
                     }
-                    "stroke-dasharray" | "stdDeviation" | "radius" | "scale" | "kernelUnitLength" => {
+                    "stroke-dasharray" | "stdDeviation" | "radius" | "scale"
+                    | "kernelUnitLength" => {
                         if ancestor_has_non_translate_transform
                             || has_non_translate_transform
                             || skip_scale_self
@@ -1067,9 +1081,18 @@ mod tests {
             <rect id="solo" class="big"/>
         </svg>"#;
         let out = render_scaled_svg(input, 0.5)?;
-        assert!(out.contains(r#"style="#), "expected style attribute, got: {out}");
-        assert!(out.contains(r#"width:15"#), "expected width scaled, got: {out}");
-        assert!(out.contains(r#"height:20"#), "expected height scaled, got: {out}");
+        assert!(
+            out.contains(r#"style="#),
+            "expected style attribute, got: {out}"
+        );
+        assert!(
+            out.contains(r#"width:15"#),
+            "expected width scaled, got: {out}"
+        );
+        assert!(
+            out.contains(r#"height:20"#),
+            "expected height scaled, got: {out}"
+        );
         assert!(out.contains(r#"x:5"#), "expected x scaled, got: {out}");
         assert!(out.contains(r#"y:10"#), "expected y scaled, got: {out}");
         assert!(
@@ -1212,7 +1235,9 @@ mod tests {
             "expected linear gradient percents preserved, got: {out}"
         );
         assert!(
-            out.contains(r#"cx="50%""#) && out.contains(r#"cy="60%""#) && out.contains(r#"r="40%""#),
+            out.contains(r#"cx="50%""#)
+                && out.contains(r#"cy="60%""#)
+                && out.contains(r#"r="40%""#),
             "expected radial gradient percents preserved, got: {out}"
         );
         Ok(())
@@ -1238,7 +1263,9 @@ mod tests {
             "expected linear gradient values unchanged, got: {out}"
         );
         assert!(
-            out.contains(r#"cx="0.5""#) && out.contains(r#"cy="0.6""#) && out.contains(r#"r="0.4""#),
+            out.contains(r#"cx="0.5""#)
+                && out.contains(r#"cy="0.6""#)
+                && out.contains(r#"r="0.4""#),
             "expected radial gradient values unchanged, got: {out}"
         );
         assert!(
