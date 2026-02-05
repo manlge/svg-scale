@@ -1,0 +1,11 @@
+target/
+tmp/
+tmp.svg
+custom-dist/
+test-output/
+output.svg
+output-with-from.svg
+output-no-from.svg
+.claude/
+CLAUDE.md
+Cargo.lock
