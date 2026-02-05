@@ -47,11 +47,12 @@ images/dist/
 svg-scale -i input.svg --scale 0.5 -o output.svg
 
 # Calculate scale from source/target size
-svg-scale -i input.svg --from 512 --to 128 -o output.svg
+svg-scale -i input.svg --to 128 -o output.svg
 
 # Batch output multiple sizes
-svg-scale -i input.svg --from 512 --to 16,32,48,128 --out-dir ./dist
+svg-scale -i input.svg --to 16,32,48,128 --out-dir ./dist
 ```
+Source size is auto-detected from the SVG when not specified.
 
 ### Options
 
@@ -59,7 +60,6 @@ svg-scale -i input.svg --from 512 --to 16,32,48,128 --out-dir ./dist
 |--------|-------------|
 | `-i, --input <FILE>` | Input SVG file |
 | `--vscode` | VSCode icon pipeline mode (512→128, outputs SVG+PNG) |
-| `--from <SIZE>` | Original size (optional, auto-detected from SVG) |
 | `--to <SIZE\|LIST>` | Target size, e.g. `128` or `16,32,48` |
 | `--scale <FLOAT>` | Direct scale ratio (highest priority) |
 | `-o, --output <FILE>` | Output file (single size) |
