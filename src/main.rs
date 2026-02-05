@@ -1,7 +1,9 @@
 use anyhow::*;
 use clap::Parser;
 use std::result::Result::Ok;
-use std::{fs, path::Path, process::Command};
+use std::{fs, path::Path};
+
+use resvg::{tiny_skia, usvg};
 
 mod path;
 mod scale;
@@ -114,6 +116,31 @@ fn get_svg_size(doc: &roxmltree::Document) -> Option<f64> {
     None
 }
 
+fn get_svg_dimensions(doc: &roxmltree::Document) -> Option<(f64, f64)> {
+    let root = doc.root_element();
+    // Prefer width/height attributes if both are available
+    if let (Some(w), Some(h)) = (root.attribute("width"), root.attribute("height")) {
+        let w_str = w.trim_end_matches("px");
+        let h_str = h.trim_end_matches("px");
+        if let (Ok(w_val), Ok(h_val)) = (w_str.parse::<f64>(), h_str.parse::<f64>()) {
+            return Some((w_val, h_val));
+        }
+    }
+
+    // Fall back to viewBox if present
+    if let Some(view_box) = root.attribute("viewBox") {
+        let parts: Vec<&str> = view_box.split_whitespace().collect();
+        if parts.len() == 4 {
+            if let (Ok(w), Ok(h)) = (parts[2].parse::<f64>(), parts[3].parse::<f64>()) {
+                return Some((w, h));
+            }
+        }
+    }
+
+    // Last resort: if width exists but height doesn't, assume square
+    get_svg_size(doc).map(|w| (w, w))
+}
+
 fn normal_pipeline(cli: &Cli) -> Result<()> {
     // 1. Parse SVG first
     let input_svg = fs::read_to_string(&cli.input)?;
@@ -193,7 +220,20 @@ fn normal_pipeline(cli: &Cli) -> Result<()> {
 
     // Output file
     if let Some(output) = &cli.output {
-        fs::write(output, &scaled_svg)?;
+        if output.ends_with(".png") {
+            let (w, h) = if let Some(dims) = get_svg_dimensions(&doc) {
+                dims
+            } else if let Some(f) = cli.from {
+                (f, f)
+            } else {
+                bail!("未能从SVG检测到尺寸，请使用 --from 指定原始尺寸");
+            };
+            let target_w = (w * scale).round().max(1.0) as u32;
+            let target_h = (h * scale).round().max(1.0) as u32;
+            render_svg_to_png(&scaled_svg, target_w, target_h, Path::new(output))?;
+        } else {
+            fs::write(output, &scaled_svg)?;
+        }
         println!("输出: {}", output);
     } else {
         // Default to stdout
@@ -230,24 +270,83 @@ fn vscode_pipeline(cli: &Cli) -> Result<()> {
 
     let png_out = out_dir.join("icon.png");
 
-    let status = Command::new("rsvg-convert")
-        .arg(svg_out.to_str().context("non-utf8 svg path")?)
-        .arg("-w")
-        .arg("128")
-        .arg("-h")
-        .arg("128")
-        .arg("-o")
-        .arg(png_out.to_str().context("non-utf8 png path")?)
-        .status()
-        .context("failed to execute rsvg-convert")?;
-
-    if !status.success() {
-        bail!("rsvg-convert failed");
-    }
+    render_svg_to_png(&scaled_svg, 128, 128, &png_out)?;
 
     println!("VSCode icon generated:");
     println!("  {}", svg_out.display());
     println!("  {}", png_out.display());
 
     Ok(())
+}
+
+fn render_svg_to_png(svg_data: &str, width: u32, height: u32, out_path: &Path) -> Result<()> {
+    let opt = usvg::Options::default();
+    let tree = usvg::Tree::from_str(svg_data, &opt).context("parse svg for rendering")?;
+
+    let size = tree.size();
+    if size.width() <= 0.0 || size.height() <= 0.0 {
+        bail!("svg has zero size");
+    }
+
+    let sx = width as f32 / size.width();
+    let sy = height as f32 / size.height();
+    let transform = usvg::Transform::from_scale(sx, sy);
+
+    let mut pixmap = tiny_skia::Pixmap::new(width, height).context("create target pixmap")?;
+
+    let mut pixmap_mut = pixmap.as_mut();
+    resvg::render(&tree, transform, &mut pixmap_mut);
+
+    pixmap.save_png(out_path).context("write png output")?;
+
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn tmp_png_path() -> std::path::PathBuf {
+        let mut path = std::env::temp_dir();
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        path.push(format!("svg-scale-test-{}.png", nanos));
+        path
+    }
+
+    fn read_png_dimensions(data: &[u8]) -> Result<(u32, u32)> {
+        const PNG_SIG: [u8; 8] = [137, 80, 78, 71, 13, 10, 26, 10];
+        if data.len() < 33 || data[0..8] != PNG_SIG {
+            bail!("invalid png signature");
+        }
+
+        let chunk_type = &data[12..16];
+        if chunk_type != b"IHDR" {
+            bail!("missing IHDR chunk");
+        }
+
+        let width = u32::from_be_bytes([data[16], data[17], data[18], data[19]]);
+        let height = u32::from_be_bytes([data[20], data[21], data[22], data[23]]);
+        Ok((width, height))
+    }
+
+    #[test]
+    fn render_png_writes_expected_dimensions() -> Result<()> {
+        let svg = r#"<svg width="10" height="20" xmlns="http://www.w3.org/2000/svg">
+  <rect x="0" y="0" width="10" height="20" fill="red"/>
+</svg>"#;
+        let out_path = tmp_png_path();
+        render_svg_to_png(svg, 30, 60, &out_path)?;
+
+        let data = fs::read(&out_path)?;
+        let (w, h) = read_png_dimensions(&data)?;
+        fs::remove_file(&out_path)?;
+
+        assert_eq!((w, h), (30, 60));
+        Ok(())
+    }
 }
